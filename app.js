@@ -641,7 +641,8 @@ async function openDealFile(dealId, index) {
   if (!file) throw new Error('Файл не найден.');
 
   if (file.mode === 'inline' && file.inlineData) {
-    window.open(file.inlineData, '_blank', 'noopener');
+    const blob = dataUrlToBlob(file.inlineData);
+    openBlobInNewTab(blob, file.name);
     return;
   }
 
