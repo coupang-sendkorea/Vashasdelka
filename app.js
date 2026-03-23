@@ -11,16 +11,59 @@ const state = {
   deals: [],
   selectedCycleId: null,
   search: '',
-  localDrafts: {}
+  localDrafts: {},
+  theme: 'dark'
 };
 
-const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.23-storage-2');
+const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.23-storage-3');
+const THEME_STORAGE_KEY = 'vsk_theme';
 const saveTimers = new Map();
 let supabase = null;
 
 const authView = el('authView');
 const mainView = el('mainView');
 const configWarning = el('configWarning');
+
+function getPreferredTheme() {
+  try {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+function loadThemePreference() {
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    return saved === 'light' || saved === 'dark' ? saved : getPreferredTheme();
+  } catch {
+    return getPreferredTheme();
+  }
+}
+
+function applyTheme(theme, persist = true) {
+  const normalized = theme === 'light' ? 'light' : 'dark';
+  state.theme = normalized;
+  document.body.dataset.theme = normalized;
+  const btn = el('themeToggleBtn');
+  if (btn) btn.textContent = normalized === 'light' ? 'Тема: светлая' : 'Тема: тёмная';
+  if (persist) {
+    try { localStorage.setItem(THEME_STORAGE_KEY, normalized); } catch {}
+  }
+}
+
+function toggleTheme() {
+  applyTheme(state.theme === 'light' ? 'dark' : 'light');
+}
+
+function resetFileInput(input) {
+  if (!input?.parentNode) return null;
+  const clone = input.cloneNode(true);
+  clone.value = '';
+  input.parentNode.replaceChild(clone, input);
+  return clone;
+}
+
 
 function showToast(message, isError = false) {
   const toast = el('toast');
@@ -330,6 +373,7 @@ function allTotals() {
 }
 
 function render() {
+  applyTheme(state.theme, false);
   renderSettings();
   renderCyclesStrip();
   renderSelectedCycle();
@@ -769,14 +813,14 @@ async function uploadDealFile(dealId, file) {
   }
 }
 
-async function openDealFile(dealId, index) {
+async function openDealFile(dealId, index, targetWindow = null) {
   const deal = state.deals.find((d) => d.id === dealId);
   const file = deal?.files?.[index];
   if (!file) throw new Error('Файл не найден.');
 
   if (file.mode === 'inline' && file.inlineData) {
     const blob = dataUrlToBlob(file.inlineData);
-    openBlobInNewTab(blob, file.name);
+    openBlobInNewTab(blob, file.name, targetWindow);
     return;
   }
 
@@ -784,7 +828,8 @@ async function openDealFile(dealId, index) {
     const bucket = file.bucket || 'client-files';
     const { data, error } = await supabase.storage.from(bucket).createSignedUrl(file.path, 60);
     if (error) throw error;
-    window.open(data.signedUrl, '_blank', 'noopener');
+    if (targetWindow && !targetWindow.closed) targetWindow.location.href = data.signedUrl;
+    else window.open(data.signedUrl, '_blank', 'noopener');
     return;
   }
 
@@ -1004,6 +1049,7 @@ function bindEvents() {
   el('refreshDataBtn').addEventListener('click', async () => {
     await checkForAppUpdate(true);
   });
+  el('themeToggleBtn')?.addEventListener('click', toggleTheme);
 
   el('newCycleBtn').addEventListener('click', async () => { try { await createCycle(); } catch (err) { showToast(err.message, true); } });
   el('deleteCycleBtn').addEventListener('click', async () => { try { await deleteCycle(); } catch (err) { showToast(err.message, true); } });
@@ -1055,10 +1101,21 @@ function bindEvents() {
       return;
     }
     if (e.target.matches('[data-upload]')) {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      try { await uploadDealFile(tr.dataset.id, file); showToast('Файл сохранён.'); } catch (err) { showToast(err.message, true); }
-      e.target.value = '';
+      const input = e.target;
+      const file = input.files?.[0];
+      if (!file) {
+        resetFileInput(input);
+        return;
+      }
+      input.disabled = true;
+      try {
+        await uploadDealFile(tr.dataset.id, file);
+        showToast('Файл сохранён.');
+      } catch (err) {
+        showToast(err.message, true);
+      } finally {
+        resetFileInput(input);
+      }
     }
   });
 
@@ -1072,21 +1129,44 @@ function bindEvents() {
   });
 
   el('dealsTbody').addEventListener('click', async (e) => {
+    const actionEl = e.target.closest('[data-action]');
     const tr = e.target.closest('tr[data-id]');
-    if (!tr) return;
-    const action = e.target.dataset.action;
+    if (!tr || !actionEl || !tr.contains(actionEl)) return;
+    const action = actionEl.dataset.action;
+    const itemIndex = Number(actionEl.dataset.index);
+
     if (action === 'pick-file') {
-      tr.querySelector('[data-upload]')?.click();
+      e.preventDefault();
+      let input = tr.querySelector('[data-upload]');
+      if (!input) return;
+      if (input.value) input = resetFileInput(input) || input;
+      input.click();
       return;
     }
     if (action === 'delete-deal') {
       try { await deleteDeal(tr.dataset.id); } catch (err) { showToast(err.message, true); }
+      return;
     }
     if (action === 'open-file') {
-      try { await openDealFile(tr.dataset.id, Number(e.target.dataset.index)); } catch (err) { showToast(err.message, true); }
+      e.preventDefault();
+      const previewWindow = window.open('', '_blank');
+      if (previewWindow) previewWindow.opener = null;
+      try {
+        await openDealFile(tr.dataset.id, itemIndex, previewWindow);
+      } catch (err) {
+        if (previewWindow && !previewWindow.closed) previewWindow.close();
+        showToast(err.message, true);
+      }
+      return;
     }
     if (action === 'remove-file') {
-      try { await removeDealFile(tr.dataset.id, Number(e.target.dataset.index)); } catch (err) { showToast(err.message, true); }
+      e.preventDefault();
+      try {
+        await removeDealFile(tr.dataset.id, itemIndex);
+        showToast('Файл удалён.');
+      } catch (err) {
+        showToast(err.message, true);
+      }
     }
   });
 
@@ -1125,6 +1205,8 @@ async function handleSession(session) {
 }
 
 async function init() {
+  state.theme = loadThemePreference();
+  applyTheme(state.theme, false);
   bindEvents();
   setAuthTab('login');
   setMainTab('dashboard');
