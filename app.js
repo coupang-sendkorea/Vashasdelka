@@ -14,7 +14,7 @@ const state = {
   localDrafts: {}
 };
 
-const CURRENT_APP_VERSION = '2026.03.23-3';
+const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.23-storage-1');
 const saveTimers = new Map();
 let supabase = null;
 
@@ -53,20 +53,41 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function sanitizeFilename(name) {
+  return String(name || 'file')
+    .normalize('NFKD')
+    .replace(/[^\w.\-\u0400-\u04FF]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 120) || 'file';
+}
+
+function buildStoragePath(deal, file) {
+  const safeName = sanitizeFilename(file?.name || 'file');
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${state.user.id}/${deal.cycle_id}/${deal.id}/${stamp}-${safeName}`;
+}
+
 function debounceSave(key, fn, wait = 450) {
-  if (saveTimers.has(key)) clearTimeout(saveTimers.get(key));
+  const existing = saveTimers.get(key);
+  if (existing?.timer) clearTimeout(existing.timer);
   const timer = setTimeout(async () => {
     saveTimers.delete(key);
     try { await fn(); } catch (e) { console.error(e); showToast(e.message || 'Ошибка сохранения', true); }
   }, wait);
-  saveTimers.set(key, timer);
+  saveTimers.set(key, { timer, fn });
 }
 
 
 async function flushPendingSaves() {
   const entries = Array.from(saveTimers.entries());
   saveTimers.clear();
-  for (const [, timer] of entries) clearTimeout(timer);
+  for (const [, entry] of entries) {
+    if (entry?.timer) clearTimeout(entry.timer);
+    if (typeof entry?.fn === 'function') {
+      try { await entry.fn(); } catch (e) { console.error(e); }
+    }
+  }
   await flushDraftsToCloud();
 }
 
@@ -173,6 +194,23 @@ function openBlobInNewTab(blob, filename = 'file') {
   setTimeout(() => URL.revokeObjectURL(blobUrl), 5_000);
 }
 
+async function applyAppRefresh(versionTag = '') {
+  await flushPendingSaves();
+  saveDraftStore();
+  if ('caches' in window) {
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    } catch (error) {
+      console.warn('Cache clear skipped', error);
+    }
+  }
+  const url = new URL(window.location.href);
+  if (versionTag) url.searchParams.set('appv', versionTag);
+  url.searchParams.set('_t', String(Date.now()));
+  window.location.href = url.toString();
+}
+
 async function checkForAppUpdate(showLatestToast = true) {
   try {
     const response = await fetch(`./version.json?t=${Date.now()}`, { cache: 'no-store' });
@@ -180,11 +218,11 @@ async function checkForAppUpdate(showLatestToast = true) {
     const versionInfo = await response.json();
     const latest = String(versionInfo.version || '').trim();
     if (latest && latest !== CURRENT_APP_VERSION) {
-      const accepted = confirm(`Доступно обновление программы (${latest}). Обновить страницу сейчас?`);
-      if (accepted) window.location.reload();
+      const accepted = confirm(`Доступно обновление программы (${latest}). Обновить программу сейчас?`);
+      if (accepted) await applyAppRefresh(latest);
       return;
     }
-    if (showLatestToast) showToast('Установлена последняя версия программы.');
+    if (showLatestToast) showToast('У вас уже последняя версия программы.');
   } catch (error) {
     console.error(error);
     showToast(error.message || 'Не удалось проверить обновление.', true);
@@ -550,16 +588,19 @@ async function createCycle() {
   render();
 }
 
-async function updateCycle(field, value) {
+async function updateCycle(field, value, immediate = false) {
   const cycle = state.cycles.find((c) => c.id === state.selectedCycleId);
   if (!cycle) return;
-  const updated = { ...cycle, [field]: value };
+  const normalizedValue = field === 'cycle_date' ? (value || todayStr()) : value;
+  const updated = { ...cycle, [field]: normalizedValue };
   state.cycles = state.cycles.map((c) => c.id === cycle.id ? updated : c);
   render();
-  debounceSave(`cycle:${cycle.id}`, async () => {
-    const { error } = await supabase.from('cycles').update({ [field]: value }).eq('id', cycle.id);
+  const runner = async () => {
+    const { error } = await supabase.from('cycles').update({ [field]: normalizedValue }).eq('id', cycle.id);
     if (error) throw error;
-  });
+  };
+  if (immediate) return runner();
+  debounceSave(`cycle:${cycle.id}:${field}`, runner, 250);
 }
 
 async function deleteCycle() {
@@ -652,30 +693,54 @@ async function resequenceDeals(cycleId) {
   }
 }
 
+async function syncDealFiles(dealId, files) {
+  const { error } = await supabase.from('deals').update({ files }).eq('id', dealId);
+  if (error) throw error;
+  const idx = state.deals.findIndex((d) => d.id === dealId);
+  if (idx !== -1) {
+    state.deals[idx] = { ...state.deals[idx], files };
+  }
+  render();
+}
+
 async function uploadDealFile(dealId, file) {
   const deal = state.deals.find((d) => d.id === dealId);
   if (!deal || !file) return;
-  if ((file.size || 0) > 10 * 1024 * 1024) {
-    throw new Error('Файл слишком большой. Допустимый размер — до 10 МБ.');
+  if ((file.size || 0) > 25 * 1024 * 1024) {
+    throw new Error('Файл слишком большой. Допустимый размер — до 25 МБ.');
   }
 
-  const inlineData = await readFileAsDataUrl(file);
+  showToast('Загрузка файла...');
+  const storagePath = buildStoragePath(deal, file);
+  const { error: uploadError } = await supabase.storage
+    .from('client-files')
+    .upload(storagePath, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || 'application/octet-stream'
+    });
+
+  if (uploadError) {
+    throw new Error(`Не удалось сохранить файл в Storage: ${uploadError.message}`);
+  }
+
   const fileRecord = {
     name: file.name,
-    mode: 'inline',
-    inlineData,
-    mimeType: file.type || '',
+    bucket: 'client-files',
+    path: storagePath,
+    mimeType: file.type || 'application/octet-stream',
     size: file.size || 0,
-    updated_at: new Date().toISOString()
+    uploaded_at: new Date().toISOString(),
+    mode: 'storage'
   };
 
   const files = [...(deal.files || []), fileRecord];
-  const { error: updateError } = await supabase.from('deals').update({ files }).eq('id', deal.id);
-  if (updateError) throw updateError;
-  deal.files = files;
-  const idx = state.deals.findIndex((d) => d.id === deal.id);
-  if (idx !== -1) state.deals[idx] = deal;
-  render();
+  try {
+    await syncDealFiles(deal.id, files);
+  } catch (error) {
+    await supabase.storage.from('client-files').remove([storagePath]);
+    throw error;
+  }
 }
 
 async function openDealFile(dealId, index) {
@@ -690,7 +755,8 @@ async function openDealFile(dealId, index) {
   }
 
   if (file.path) {
-    const { data, error } = await supabase.storage.from('client-files').createSignedUrl(file.path, 60);
+    const bucket = file.bucket || 'client-files';
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(file.path, 60);
     if (error) throw error;
     window.open(data.signedUrl, '_blank', 'noopener');
     return;
@@ -705,18 +771,20 @@ async function removeDealFile(dealId, index) {
   const files = [...(deal.files || [])];
   const [removed] = files.splice(index, 1);
   if (!removed) return;
-  const { error } = await supabase.from('deals').update({ files }).eq('id', deal.id);
-  if (error) throw error;
-  deal.files = files;
-  const idx = state.deals.findIndex((d) => d.id === deal.id);
-  if (idx !== -1) state.deals[idx] = deal;
-  render();
+
+  if (removed.path) {
+    const bucket = removed.bucket || 'client-files';
+    const { error: storageError } = await supabase.storage.from(bucket).remove([removed.path]);
+    if (storageError) throw storageError;
+  }
+
+  await syncDealFiles(deal.id, files);
 }
 
-async function saveSettings(partial) {
+async function saveSettings(partial, immediate = false) {
   state.settings = { ...state.settings, ...partial };
   render();
-  debounceSave('settings', async () => {
+  const runner = async () => {
     const { error } = await supabase.from('app_settings').upsert({
       user_id: state.user.id,
       initial_cash: parseNum(state.settings.initial_cash),
@@ -724,7 +792,9 @@ async function saveSettings(partial) {
       lock_settings: !!state.settings.lock_settings,
     });
     if (error) throw error;
-  }, 300);
+  };
+  if (immediate) return runner();
+  debounceSave('settings', runner, 250);
 }
 
 function exportBackup() {
@@ -909,23 +979,27 @@ function bindEvents() {
     await checkForAppUpdate(true);
   });
 
-  el('reloadCloudDataBtn')?.addEventListener('click', async () => {
-    try { await loadData(); showToast('Данные перечитаны из облака.'); } catch (err) { showToast(err.message, true); }
-  });
-
   el('newCycleBtn').addEventListener('click', async () => { try { await createCycle(); } catch (err) { showToast(err.message, true); } });
   el('deleteCycleBtn').addEventListener('click', async () => { try { await deleteCycle(); } catch (err) { showToast(err.message, true); } });
   el('addDealBtn').addEventListener('click', async () => { try { await addDeal(); } catch (err) { showToast(err.message, true); } });
 
   el('cycleNumber').addEventListener('input', (e) => updateCycle('cycle_number', e.target.value));
   el('cycleOperator').addEventListener('input', (e) => updateCycle('operator_name', e.target.value));
-  el('cycleDate').addEventListener('change', (e) => updateCycle('cycle_date', e.target.value));
-  el('cycleStatus').addEventListener('change', (e) => updateCycle('status', e.target.value));
+  el('cycleDate').addEventListener('change', (e) => updateCycle('cycle_date', e.target.value, true));
+  el('cycleStatus').addEventListener('change', (e) => updateCycle('status', e.target.value, true));
+  el('cycleForm').addEventListener('focusout', (e) => {
+    if (e.target.id === 'cycleNumber') updateCycle('cycle_number', e.target.value, true).catch((err) => showToast(err.message, true));
+    if (e.target.id === 'cycleOperator') updateCycle('operator_name', e.target.value, true).catch((err) => showToast(err.message, true));
+  }, true);
 
   el('settingsForm').addEventListener('input', (e) => {
     if (e.target.id === 'initialCash') saveSettings({ initial_cash: parseNum(e.target.value) });
     if (e.target.id === 'initialCode') saveSettings({ initial_code: parseNum(e.target.value) });
   });
+  el('settingsForm').addEventListener('focusout', (e) => {
+    if (e.target.id === 'initialCash') saveSettings({ initial_cash: parseNum(e.target.value) }, true).catch((err) => showToast(err.message, true));
+    if (e.target.id === 'initialCode') saveSettings({ initial_code: parseNum(e.target.value) }, true).catch((err) => showToast(err.message, true));
+  }, true);
 
   el('lockSettingsBtn').addEventListener('click', () => saveSettings({ lock_settings: true }));
   el('unlockSettingsBtn').addEventListener('click', () => {
@@ -1006,6 +1080,7 @@ function bindEvents() {
   el('exportExcelBtn').addEventListener('click', exportExcel);
 
   window.addEventListener('beforeunload', () => { try { saveDraftStore(); } catch {} });
+  window.addEventListener('pagehide', () => { try { saveDraftStore(); } catch {} });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { saveDraftStore(); } catch {} } });
 }
 

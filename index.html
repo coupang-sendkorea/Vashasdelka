@@ -4,7 +4,27 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ВашаСделка.Крипто.</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <script>
+    window.__APP_BOOT__ = (async () => {
+      let version = String(Date.now());
+      try {
+        const response = await fetch(`./version.json?t=${Date.now()}`, { cache: 'no-store' });
+        if (response.ok) {
+          const info = await response.json();
+          version = String(info.version || version);
+        }
+      } catch (error) {
+        console.warn('Version bootstrap fallback', error);
+      }
+      window.__APP_ASSET_VERSION__ = version;
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = `./styles.css?v=${encodeURIComponent(version)}`;
+      document.head.appendChild(link);
+      await new Promise((resolve) => { link.onload = link.onerror = () => resolve(); });
+      return version;
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="./config.js"></script>
@@ -60,7 +80,7 @@
         </div>
         <div class="topbar-actions">
           <span id="userEmail" class="pill"></span>
-          <button id="refreshDataBtn" class="secondary" type="button">Проверить обновление ПО</button>
+          <button id="refreshDataBtn" class="secondary" type="button">Обновить программу</button>
           <button id="signOutBtn" class="secondary" type="button">Выйти</button>
         </div>
       </header>
@@ -257,7 +277,7 @@
               Импорт JSON
             </label>
           </div>
-          <p class="muted mt-md">JSON-резервная копия включает настройки, циклы и сделки. Файлы клиентов сохраняются в Supabase Storage, а при ошибке Storage автоматически встраиваются в базу для надёжности.</p>
+          <p class="muted mt-md">JSON-резервная копия включает настройки, циклы и сделки. Файлы клиентов сохраняются в Supabase Storage, а в резервную копию попадают только их ссылки и метаданные.</p>
         </div>
       </section>
 
@@ -295,6 +315,14 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script type="module" src="./app.js"></script>
+  <script>
+    (async () => {
+      const version = await (window.__APP_BOOT__ || Promise.resolve(String(Date.now())));
+      const script = document.createElement('script');
+      script.type = 'module';
+      script.src = `./app.js?v=${encodeURIComponent(version)}`;
+      document.body.appendChild(script);
+    })();
+  </script>
 </body>
 </html>
