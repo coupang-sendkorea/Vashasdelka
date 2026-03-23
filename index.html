@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ВашаСделка.Крипто.</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="./config.js"></script>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <section id="configWarning" class="card warning hidden">
+      <h2>Нужно заполнить config.js</h2>
+      <p>Откройте файл <code>config.js</code> и вставьте ваш <b>Supabase URL</b> и <b>Publishable/Anon Key</b> из панели Supabase.</p>
+    </section>
+
+    <section id="authView" class="auth-layout hidden">
+      <div class="brand-panel">
+        <div class="brand-glow"></div>
+        <div class="brand-copy">
+          <div class="eyebrow">Облачная версия</div>
+          <h1>ВашаСделка.<span>Крипто.</span></h1>
+          <p>Учёт циклов, сделок, баланса и файлов клиентов в браузере через GitHub Pages + Supabase.</p>
+          <ul>
+            <li>Работа из любого браузера</li>
+            <li>Данные и файлы в облаке</li>
+            <li>Поиск, Excel и резервные копии</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card auth-card">
+        <div class="tabs small-tabs">
+          <button class="tab-button active" data-auth-tab="login">Вход</button>
+          <button class="tab-button" data-auth-tab="signup">Регистрация</button>
+        </div>
+
+        <form id="loginForm" class="form-stack">
+          <label>Эл. почта<input type="email" id="loginEmail" required /></label>
+          <label>Пароль<input type="password" id="loginPassword" required /></label>
+          <button class="primary" type="submit">Войти</button>
+        </form>
+
+        <form id="signupForm" class="form-stack hidden">
+          <label>Эл. почта<input type="email" id="signupEmail" required /></label>
+          <label>Пароль<input type="password" id="signupPassword" minlength="6" required /></label>
+          <button class="primary" type="submit">Зарегистрироваться</button>
+        </form>
+
+        <p class="muted">После регистрации подтвердите e-mail, если Supabase попросит это сделать.</p>
+      </div>
+    </section>
+
+    <section id="mainView" class="hidden">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">Облачный кабинет</div>
+          <h1>ВашаСделка.Крипто.</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="userEmail" class="pill"></span>
+          <button id="refreshDataBtn" class="secondary" type="button">Проверить обновление ПО</button>
+          <button id="signOutBtn" class="secondary" type="button">Выйти</button>
+        </div>
+      </header>
+
+      <nav class="tabs main-tabs">
+        <button class="tab-button active" data-tab="dashboard">Главная</button>
+        <button class="tab-button" data-tab="excel">Выгрузка в Excel</button>
+        <button class="tab-button" data-tab="backup">Импорт и экспорт базы</button>
+        <button class="tab-button" data-tab="search">Поиск сделок по клиентам</button>
+      </nav>
+
+      <section id="tab-dashboard" class="tab-panel active">
+        <div class="grid two-col gap-lg">
+          <div class="card">
+            <div class="card-head between">
+              <h2>Начальные данные программы</h2>
+              <div class="inline-actions">
+                <span id="lockBadge" class="badge badge-lock">Разблокировано</span>
+                <button id="lockSettingsBtn" class="secondary" type="button">Заблокировать</button>
+                <button id="unlockSettingsBtn" class="secondary" type="button">Разблокировать</button>
+              </div>
+            </div>
+            <form id="settingsForm" class="grid two-col gap-md">
+              <label>Начальный рублёвый остаток
+                <input type="number" step="0.01" id="initialCash" />
+              </label>
+              <label>Начальный код
+                <input type="number" step="0.01" id="initialCode" />
+              </label>
+            </form>
+            <p class="muted">Разблокировка начальных данных — пароль <b>1111</b>. Автосохранение работает после каждого изменения.</p>
+          </div>
+
+          <div class="card compact-stats">
+            <h2>Текущие циклы</h2>
+            <div class="stats-grid two">
+              <div class="stat-box">
+                <div class="stat-label">Всего в кассе</div>
+                <div class="stat-value" id="totalCashDisplay">0</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-label">Всего кода</div>
+                <div class="stat-value" id="totalCodeDisplay">0</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <button id="newCycleBtn" class="primary" type="button">+ Новый цикл</button>
+          <h2>Циклы</h2>
+        </div>
+
+        <div id="cyclesStrip" class="cycles-strip"></div>
+
+        <div id="cycleEditor" class="card hidden">
+          <div class="grid two-col gap-lg">
+            <div>
+              <div class="card-head between">
+                <h2>Карточка цикла</h2>
+                <button id="deleteCycleBtn" class="danger" type="button">Удалить цикл</button>
+              </div>
+              <form id="cycleForm" class="grid two-col gap-md">
+                <label>ID цикла
+                  <input type="text" id="cycleNumber" />
+                </label>
+                <label>Оператор
+                  <input type="text" id="cycleOperator" />
+                </label>
+                <label>Дата цикла
+                  <input type="date" id="cycleDate" />
+                </label>
+                <label>Статус
+                  <select id="cycleStatus">
+                    <option value="Открыт">Открыт</option>
+                    <option value="Закрыт">Закрыт</option>
+                    <option value="Пауза">Пауза</option>
+                  </select>
+                </label>
+              </form>
+            </div>
+            <div>
+              <h2>Баланс по выбранному циклу</h2>
+              <div class="stats-grid two">
+                <div class="stat-box"><div class="stat-label">Всего в кассе на начало цикла</div><div class="stat-value" id="cycleCashStart">0</div></div>
+                <div class="stat-box"><div class="stat-label">Всего кода на начало цикла</div><div class="stat-value" id="cycleCodeStart">0</div></div>
+                <div class="stat-box"><div class="stat-label">Итого руб по циклу</div><div class="stat-value" id="cycleRubFlow">0</div></div>
+                <div class="stat-box"><div class="stat-label">Итого кода по циклу</div><div class="stat-value" id="cycleCodeFlow">0</div></div>
+                <div class="stat-box"><div class="stat-label">Всего в кассе после цикла</div><div class="stat-value" id="cycleCashAfter">0</div></div>
+                <div class="stat-box"><div class="stat-label">Всего кода после цикла</div><div class="stat-value" id="cycleCodeAfter">0</div></div>
+                <div class="stat-box full"><div class="stat-label">Спред</div><div class="stat-value" id="cycleSpread">0</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-head mt-lg">
+            <h2>Движение по циклу</h2>
+            <button id="addDealBtn" class="secondary" type="button">+ Добавить строку</button>
+          </div>
+
+          <div class="table-shell">
+            <div class="table-scroll">
+              <table class="deals-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Клиент</th>
+                    <th>Поступило, руб</th>
+                    <th>Расход, руб</th>
+                    <th>Приход кода</th>
+                    <th>Расход кода</th>
+                    <th>Иные платежи</th>
+                    <th>Пополнение / вывод кода</th>
+                    <th>Примечание</th>
+                    <th>Хэш транзакции и файлы</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="dealsTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt-lg">
+          <h2>Баланс по циклам</h2>
+          <div class="table-scroll small-scroll">
+            <table class="summary-table">
+              <thead>
+                <tr>
+                  <th>ID цикла</th>
+                  <th>Дата</th>
+                  <th>Оператор</th>
+                  <th>Количество сделок</th>
+                  <th>Касса на начало</th>
+                  <th>Руб по циклу</th>
+                  <th>Касса после</th>
+                  <th>Код на начало</th>
+                  <th>Код по циклу</th>
+                  <th>Код после</th>
+                  <th>Спред</th>
+                </tr>
+              </thead>
+              <tbody id="cycleSummaryTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-excel" class="tab-panel">
+        <div class="card">
+          <h2>Выгрузка в Excel</h2>
+          <div class="grid three-col gap-md">
+            <label>Период
+              <select id="excelPeriod">
+                <option value="all">Все даты</option>
+                <option value="week">Последняя неделя</option>
+                <option value="month">Последний месяц</option>
+                <option value="year">Последний год</option>
+                <option value="custom">Свой период</option>
+              </select>
+            </label>
+            <label>Дата от
+              <input type="date" id="excelDateFrom" />
+            </label>
+            <label>Дата до
+              <input type="date" id="excelDateTo" />
+            </label>
+          </div>
+          <div class="grid two-col gap-md mt-md">
+            <label>Оператор
+              <select id="excelOperatorFilter"><option value="all">Все операторы</option></select>
+            </label>
+            <label>Тип выгрузки
+              <select id="excelScope">
+                <option value="deals">Сделки</option>
+                <option value="cycles">Циклы</option>
+              </select>
+            </label>
+          </div>
+          <div class="inline-actions mt-md">
+            <button id="exportExcelBtn" class="primary" type="button">Выгрузить</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-backup" class="tab-panel">
+        <div class="card">
+          <h2>Импорт и экспорт базы</h2>
+          <div class="inline-actions wrap">
+            <button id="exportBackupBtn" class="primary" type="button">Экспорт JSON</button>
+            <label class="file-btn">
+              <input id="importBackupInput" type="file" accept="application/json" hidden />
+              Импорт JSON
+            </label>
+          </div>
+          <p class="muted mt-md">JSON-резервная копия включает настройки, циклы и сделки. Файлы клиентов сохраняются в Supabase Storage, а при ошибке Storage автоматически встраиваются в базу для надёжности.</p>
+        </div>
+      </section>
+
+      <section id="tab-search" class="tab-panel">
+        <div class="card">
+          <h2>Поиск сделок по клиентам</h2>
+          <label>Поиск
+            <input id="searchInput" type="text" placeholder="Введите ФИО клиента" />
+          </label>
+          <div class="table-scroll mt-md small-scroll">
+            <table class="summary-table">
+              <thead>
+                <tr>
+                  <th>Дата</th>
+                  <th>ID цикла</th>
+                  <th>Оператор</th>
+                  <th>#</th>
+                  <th>Клиент</th>
+                  <th>Поступило, руб</th>
+                  <th>Расход, руб</th>
+                  <th>Приход кода</th>
+                  <th>Расход кода</th>
+                </tr>
+              </thead>
+              <tbody id="searchResultsTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <footer class="app-footer">
+        <span>© 2026 «Ваша Сделка: Крипто». Все права защищены.</span>
+      </footer>
+    </section>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
