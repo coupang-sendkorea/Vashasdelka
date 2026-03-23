@@ -14,7 +14,7 @@ const state = {
   localDrafts: {}
 };
 
-const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.23-storage-1');
+const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.23-storage-2');
 const saveTimers = new Map();
 let supabase = null;
 
@@ -53,13 +53,39 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function transliterateRu(value) {
+  const map = {
+    'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m',
+    'н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'',
+    'ы':'y','ь':'','э':'e','ю':'yu','я':'ya'
+  };
+  return String(value || '').split('').map((ch) => {
+    const lower = ch.toLowerCase();
+    if (!(lower in map)) return ch;
+    const out = map[lower];
+    return ch === lower ? out : out.charAt(0).toUpperCase() + out.slice(1);
+  }).join('');
+}
+
 function sanitizeFilename(name) {
-  return String(name || 'file')
+  const original = String(name || 'file').trim();
+  const dot = original.lastIndexOf('.');
+  const base = dot > 0 ? original.slice(0, dot) : original;
+  const ext = dot > 0 ? original.slice(dot) : '';
+
+  const safeBase = transliterateRu(base)
     .normalize('NFKD')
-    .replace(/[^\w.\-\u0400-\u04FF]+/g, '_')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
     .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 120) || 'file';
+    .replace(/^[_\. -]+|[_\. -]+$/g, '')
+    .slice(0, 100) || 'file';
+
+  const safeExt = transliterateRu(ext)
+    .normalize('NFKD')
+    .replace(/[^A-Za-z0-9.]+/g, '')
+    .slice(0, 16);
+
+  return `${safeBase}${safeExt}`;
 }
 
 function buildStoragePath(deal, file) {
