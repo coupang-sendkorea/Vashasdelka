@@ -130,6 +130,49 @@ function readFileAsDataUrl(file) {
   });
 }
 
+function dataUrlToBlob(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+    throw new Error('Некорректный формат файла.');
+  }
+  const commaIndex = dataUrl.indexOf(',');
+  if (commaIndex === -1) throw new Error('Некорректный формат файла.');
+  const meta = dataUrl.slice(5, commaIndex);
+  const body = dataUrl.slice(commaIndex + 1);
+  const isBase64 = /;base64/i.test(meta);
+  const mimeType = (meta.split(';')[0] || 'application/octet-stream').trim() || 'application/octet-stream';
+
+  if (isBase64) {
+    const binary = atob(body);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType });
+  }
+
+  return new Blob([decodeURIComponent(body)], { type: mimeType });
+}
+
+function openBlobInNewTab(blob, filename = 'file') {
+  const blobUrl = URL.createObjectURL(blob);
+  const ext = (filename.split('.').pop() || '').toLowerCase();
+  const canPreview = (blob.type || '').startsWith('image/') || blob.type === 'application/pdf' || ['png','jpg','jpeg','gif','webp','svg','pdf'].includes(ext);
+
+  if (canPreview) {
+    const win = window.open(blobUrl, '_blank', 'noopener');
+    if (win) {
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+      return;
+    }
+  }
+
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 5_000);
+}
+
 async function checkForAppUpdate(showLatestToast = true) {
   try {
     const response = await fetch(`./version.json?t=${Date.now()}`, { cache: 'no-store' });
