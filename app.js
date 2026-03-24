@@ -15,7 +15,7 @@ const state = {
   theme: 'dark'
 };
 
-const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.23-storage-3');
+const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.23-storage-4');
 const THEME_STORAGE_KEY = 'vsk_theme';
 const saveTimers = new Map();
 let supabase = null;
@@ -241,16 +241,34 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([decodeURIComponent(body)], { type: mimeType });
 }
 
-function openBlobInNewTab(blob, filename = 'file') {
+function openBlobInNewTab(blob, filename = 'file', targetWindow = null) {
   const blobUrl = URL.createObjectURL(blob);
   const ext = (filename.split('.').pop() || '').toLowerCase();
   const canPreview = (blob.type || '').startsWith('image/') || blob.type === 'application/pdf' || ['png','jpg','jpeg','gif','webp','svg','pdf'].includes(ext);
 
   if (canPreview) {
+    if (targetWindow && !targetWindow.closed) {
+      try {
+        targetWindow.location.replace(blobUrl);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+        return;
+      } catch (error) {
+        console.warn('Preview window navigation failed, fallback to new tab', error);
+      }
+    }
+
     const win = window.open(blobUrl, '_blank', 'noopener');
     if (win) {
       setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
       return;
+    }
+  }
+
+  if (targetWindow && !targetWindow.closed) {
+    try {
+      targetWindow.close();
+    } catch (error) {
+      console.warn('Could not close preview window before download fallback', error);
     }
   }
 
@@ -826,10 +844,10 @@ async function openDealFile(dealId, index, targetWindow = null) {
 
   if (file.path) {
     const bucket = file.bucket || 'client-files';
-    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(file.path, 60);
+    const { data, error } = await supabase.storage.from(bucket).download(file.path);
     if (error) throw error;
-    if (targetWindow && !targetWindow.closed) targetWindow.location.href = data.signedUrl;
-    else window.open(data.signedUrl, '_blank', 'noopener');
+    if (!data) throw new Error('Не удалось получить файл из Storage.');
+    openBlobInNewTab(data, file.name || 'file', targetWindow);
     return;
   }
 
