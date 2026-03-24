@@ -15,10 +15,12 @@ const state = {
   theme: 'dark'
 };
 
-const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.23-storage-4');
+const CURRENT_APP_VERSION = String(window.__APP_ASSET_VERSION__ || '2026.03.24-storage-5');
 const THEME_STORAGE_KEY = 'vsk_theme';
 const saveTimers = new Map();
 let supabase = null;
+let currentPreviewUrl = null;
+let currentPreviewFile = null;
 
 const authView = el('authView');
 const mainView = el('mainView');
@@ -241,44 +243,148 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([decodeURIComponent(body)], { type: mimeType });
 }
 
-function openBlobInNewTab(blob, filename = 'file', targetWindow = null) {
-  const blobUrl = URL.createObjectURL(blob);
-  const ext = (filename.split('.').pop() || '').toLowerCase();
-  const canPreview = (blob.type || '').startsWith('image/') || blob.type === 'application/pdf' || ['png','jpg','jpeg','gif','webp','svg','pdf'].includes(ext);
 
-  if (canPreview) {
-    if (targetWindow && !targetWindow.closed) {
-      try {
-        targetWindow.location.replace(blobUrl);
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
-        return;
-      } catch (error) {
-        console.warn('Preview window navigation failed, fallback to new tab', error);
-      }
-    }
+function revokePreviewUrl() {
+  if (!currentPreviewUrl) return;
+  try { URL.revokeObjectURL(currentPreviewUrl); } catch {}
+  currentPreviewUrl = null;
+}
 
-    const win = window.open(blobUrl, '_blank', 'noopener');
-    if (win) {
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
-      return;
-    }
-  }
+function detectPreviewKind(blob, filename = 'file') {
+  const type = String(blob?.type || '').toLowerCase();
+  const ext = (String(filename || '').split('.').pop() || '').toLowerCase();
+  if (type.startsWith('image/') || ['png','jpg','jpeg','gif','webp','svg','bmp'].includes(ext)) return 'image';
+  if (type === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (type.startsWith('text/') || ['txt','json','csv','xml','html','md','log'].includes(ext)) return 'text';
+  return 'download';
+}
 
-  if (targetWindow && !targetWindow.closed) {
-    try {
-      targetWindow.close();
-    } catch (error) {
-      console.warn('Could not close preview window before download fallback', error);
-    }
-  }
+function hidePreviewSections() {
+  el('previewLoading')?.classList.add('hidden');
+  el('previewEmpty')?.classList.add('hidden');
+  el('previewFrameWrap')?.classList.add('hidden');
+  el('previewImageWrap')?.classList.add('hidden');
+  el('previewText')?.classList.add('hidden');
+}
 
+function resetPreviewContent() {
+  revokePreviewUrl();
+  currentPreviewFile = null;
+  const frame = el('previewFrame');
+  const image = el('previewImage');
+  const text = el('previewText');
+  const empty = el('previewEmpty');
+  if (frame) frame.removeAttribute('src');
+  if (image) image.removeAttribute('src');
+  if (text) text.textContent = '';
+  if (empty) empty.textContent = '';
+  const title = el('previewTitle');
+  const subtitle = el('previewSubtitle');
+  if (title) title.textContent = 'Файл';
+  if (subtitle) subtitle.textContent = '';
+  hidePreviewSections();
+}
+
+function closePreviewModal() {
+  const modal = el('filePreviewModal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('preview-open');
+  resetPreviewContent();
+}
+
+function openPreviewModalShell(fileName = 'Файл', subtitle = '') {
+  const modal = el('filePreviewModal');
+  if (!modal) return;
+  resetPreviewContent();
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('preview-open');
+  const title = el('previewTitle');
+  const subtitleEl = el('previewSubtitle');
+  if (title) title.textContent = fileName || 'Файл';
+  if (subtitleEl) subtitleEl.textContent = subtitle || '';
+  el('previewLoading')?.classList.remove('hidden');
+}
+
+function fillPreviewSubtitle(file) {
+  const pieces = [];
+  if (file?.mimeType) pieces.push(file.mimeType);
+  if (Number.isFinite(Number(file?.size)) && Number(file.size) > 0) pieces.push(`${Math.round(Number(file.size) / 1024)} КБ`);
+  return pieces.join(' • ');
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = blobUrl;
+  a.href = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 5_000);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function loadDealFileBlob(file) {
+  if (!file) throw new Error('Файл не найден.');
+  if (file.mode === 'inline' && file.inlineData) {
+    return dataUrlToBlob(file.inlineData);
+  }
+  if (file.path) {
+    const bucket = file.bucket || 'client-files';
+    const { data, error } = await supabase.storage.from(bucket).download(file.path);
+    if (error) throw error;
+    if (!data) throw new Error('Не удалось получить файл из Storage.');
+    return data;
+  }
+  throw new Error('Файл не найден.');
+}
+
+async function previewDealFile(dealId, index) {
+  const deal = state.deals.find((d) => d.id === dealId);
+  const file = deal?.files?.[index];
+  if (!file) throw new Error('Файл не найден.');
+
+  openPreviewModalShell(file.name || 'Файл', fillPreviewSubtitle(file));
+  const blob = await loadDealFileBlob(file);
+  currentPreviewFile = { blob, name: file.name || 'file' };
+  const kind = detectPreviewKind(blob, file.name || 'file');
+  hidePreviewSections();
+
+  if (kind === 'download') {
+    closePreviewModal();
+    downloadBlob(blob, file.name || 'file');
+    showToast('Формат не поддерживает встроенный просмотр. Файл скачан.');
+    return;
+  }
+
+  if (kind === 'text') {
+    const text = await blob.text();
+    const textEl = el('previewText');
+    if (textEl) {
+      textEl.textContent = text;
+      textEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  currentPreviewUrl = URL.createObjectURL(blob);
+  if (kind === 'pdf') {
+    const frame = el('previewFrame');
+    if (frame) {
+      frame.src = currentPreviewUrl;
+      el('previewFrameWrap')?.classList.remove('hidden');
+    }
+    return;
+  }
+
+  const image = el('previewImage');
+  if (image) {
+    image.src = currentPreviewUrl;
+    image.alt = file.name || 'Предпросмотр файла';
+    el('previewImageWrap')?.classList.remove('hidden');
+  }
 }
 
 async function applyAppRefresh(versionTag = '') {
@@ -831,29 +937,6 @@ async function uploadDealFile(dealId, file) {
   }
 }
 
-async function openDealFile(dealId, index, targetWindow = null) {
-  const deal = state.deals.find((d) => d.id === dealId);
-  const file = deal?.files?.[index];
-  if (!file) throw new Error('Файл не найден.');
-
-  if (file.mode === 'inline' && file.inlineData) {
-    const blob = dataUrlToBlob(file.inlineData);
-    openBlobInNewTab(blob, file.name, targetWindow);
-    return;
-  }
-
-  if (file.path) {
-    const bucket = file.bucket || 'client-files';
-    const { data, error } = await supabase.storage.from(bucket).download(file.path);
-    if (error) throw error;
-    if (!data) throw new Error('Не удалось получить файл из Storage.');
-    openBlobInNewTab(data, file.name || 'file', targetWindow);
-    return;
-  }
-
-  throw new Error('Файл не найден.');
-}
-
 async function removeDealFile(dealId, index) {
   const deal = state.deals.find((d) => d.id === dealId);
   if (!deal) return;
@@ -868,6 +951,7 @@ async function removeDealFile(dealId, index) {
   }
 
   await syncDealFiles(deal.id, files);
+  closePreviewModal();
 }
 
 async function saveSettings(partial, immediate = false) {
@@ -1035,16 +1119,6 @@ function exportExcel() {
   XLSX.writeFile(wb, `vasha-sdelka-${scope}-${todayStr()}.xlsx`);
 }
 
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
 
 function bindEvents() {
   qsa('[data-auth-tab]').forEach((btn) => btn.addEventListener('click', () => setAuthTab(btn.dataset.authTab)));
@@ -1167,12 +1241,10 @@ function bindEvents() {
     }
     if (action === 'open-file') {
       e.preventDefault();
-      const previewWindow = window.open('', '_blank');
-      if (previewWindow) previewWindow.opener = null;
       try {
-        await openDealFile(tr.dataset.id, itemIndex, previewWindow);
+        await previewDealFile(tr.dataset.id, itemIndex);
       } catch (err) {
-        if (previewWindow && !previewWindow.closed) previewWindow.close();
+        closePreviewModal();
         showToast(err.message, true);
       }
       return;
@@ -1187,6 +1259,22 @@ function bindEvents() {
       }
     }
   });
+
+
+el('previewCloseBtn')?.addEventListener('click', closePreviewModal);
+el('previewDownloadBtn')?.addEventListener('click', () => {
+  if (!currentPreviewFile?.blob) return;
+  downloadBlob(currentPreviewFile.blob, currentPreviewFile.name || 'file');
+});
+el('filePreviewModal')?.addEventListener('click', (e) => {
+  if (e.target?.matches?.('[data-preview-close]')) closePreviewModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !el('filePreviewModal')?.classList.contains('hidden')) {
+    e.preventDefault();
+    closePreviewModal();
+  }
+});
 
   el('searchInput').addEventListener('input', (e) => {
     state.search = e.target.value || '';

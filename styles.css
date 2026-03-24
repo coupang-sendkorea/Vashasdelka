@@ -265,3 +265,19 @@ body[data-theme="light"] thead th {
 body[data-theme="light"] .brand-glow {
   background: radial-gradient(circle, rgba(232,192,99,.16) 0%, transparent 55%);
 }
+
+
+/* file preview modal */
+.preview-modal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.preview-modal.hidden { display: none; }
+.preview-backdrop { position: absolute; inset: 0; background: rgba(6, 10, 20, 0.62); backdrop-filter: blur(4px); }
+.preview-dialog { position: relative; width: min(1100px, calc(100vw - 24px)); max-height: calc(100vh - 24px); display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 22px; border: 1px solid var(--line); background: var(--card); box-shadow: 0 25px 80px rgba(0,0,0,.28); overflow: hidden; }
+.preview-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.preview-loading, .preview-empty { min-height: 120px; display: flex; align-items: center; justify-content: center; text-align: center; border: 1px dashed var(--line); border-radius: 16px; background: var(--soft); color: var(--muted); padding: 16px; }
+.preview-frame-wrap, .preview-image-wrap, .preview-text { min-height: 420px; max-height: calc(100vh - 220px); border: 1px solid var(--line); border-radius: 18px; background: var(--soft); }
+.preview-frame-wrap, .preview-image-wrap { overflow: auto; }
+.preview-frame { width: 100%; height: calc(100vh - 220px); min-height: 420px; border: 0; background: white; }
+.preview-image { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.preview-text { margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+body.preview-open { overflow: hidden; }
+@media (max-width: 800px) { .preview-modal { padding: 10px; } .preview-dialog { width: calc(100vw - 12px); max-height: calc(100vh - 12px); padding: 12px; border-radius: 18px; } .preview-frame-wrap, .preview-image-wrap, .preview-text { max-height: calc(100vh - 180px); } .preview-frame { height: calc(100vh - 180px); } }
